@@ -32,10 +32,7 @@ def load_pdf_parser():
 
     def to_markdown_with_headers(pdf_path: str) -> str:
         with pymupdf.open(pdf_path) as document:
-            if document.get_toc():
-                headers = pymupdf4llm.TocHeaders(document)
-            else:
-                headers = pymupdf4llm.IdentifyHeaders(document, max_levels=5)
+            headers = pymupdf4llm.IdentifyHeaders(document, max_levels=5)
 
             return pymupdf4llm.to_markdown(document, hdr_info=headers)
 
