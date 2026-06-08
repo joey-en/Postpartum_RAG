@@ -5,6 +5,8 @@ import csv
 import re
 from pathlib import Path
 from urllib.parse import urljoin
+from urllib.request import Request
+from urllib.request import urlopen
 
 import requests
 from bs4 import BeautifulSoup
@@ -454,14 +456,26 @@ def extract_markdown_from_container(container: Tag) -> str:
 
 
 def fetch_html(url: str) -> str:
-    response = requests.get(
-        url,
-        headers=REQUEST_HEADERS,
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    response.encoding = response.apparent_encoding or response.encoding
-    return response.text
+    try:
+        response = requests.get(
+            url,
+            headers=REQUEST_HEADERS,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or response.encoding
+        return response.text
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code != 403:
+            raise
+    except requests.RequestException:
+        pass
+
+    request = Request(url, headers=REQUEST_HEADERS)
+    with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")
 
 
 def convert_html_to_markdown(html: str, url: str) -> str:
