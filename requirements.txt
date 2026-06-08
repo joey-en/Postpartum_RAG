@@ -1,1 +1,2 @@
 pymupdf4llm==1.27.2.3
+docling==2.99.0
