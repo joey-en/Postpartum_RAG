@@ -8,7 +8,12 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from chunking_headers import build_transformed_markdown, chunk_by_headers, transform_markdown
+from chunking_headers import (
+    build_metadata_rows,
+    build_transformed_markdown,
+    chunk_by_headers,
+    transform_markdown,
+)
 
 
 SAMPLE_MARKDOWN = """# Intro
@@ -113,3 +118,28 @@ Child body.
             "Child body.",
         ]
     )
+
+
+def test_header_metadata_uses_chunk_length_and_breadcrumb() -> None:
+    records = transform_markdown(SAMPLE_MARKDOWN)
+    chunks = chunk_by_headers("SRC001", records)
+    metadata_rows = build_metadata_rows(
+        chunks,
+        {
+            "source_id": "SRC001",
+            "source_title": "Sample Title",
+            "organization": "Sample Org",
+            "format": "guideline pdf",
+            "year": "2024",
+            "url": "https://example.com",
+            "section": "Sample Section",
+        },
+    )
+
+    first_row = metadata_rows[0]
+    first_chunk = chunks["SRC001_CHUNK_1_0_0_0_0_0"]
+
+    assert "chunk_size" not in first_row
+    assert "overlap_size" not in first_row
+    assert first_row["breadcrumb"] == "Intro"
+    assert first_row["chunk_length"] == str(len(first_chunk))

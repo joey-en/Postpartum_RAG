@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
 import json
 import re
@@ -26,11 +27,9 @@ CHUNKS_DIR = windows_module.CHUNKS_DIR
 SOURCE_METADATA_PATH = windows_module.SOURCE_METADATA_PATH
 clean_markdown_text = windows_module.clean_markdown_text
 ensure_directory = windows_module.ensure_directory
-get_base_chunk_config = windows_module.get_base_chunk_config
 load_source_metadata = windows_module.load_source_metadata
 read_markdown = windows_module.read_markdown
 validate_inputs = windows_module.validate_inputs
-write_metadata_csv = windows_module.write_metadata_csv
 write_windows_json = windows_module.write_windows_json
 
 
@@ -194,6 +193,10 @@ def build_chunk_text(breadcrumb: str, current_header: str, body_lines: list[str]
     return "\n".join(parts).strip()
 
 
+def extract_breadcrumb(chunk_text: str) -> str:
+    return chunk_text.splitlines()[0].strip() if chunk_text else ""
+
+
 def chunk_by_headers(
     source_id: str,
     records: list[dict[str, str | int]],
@@ -226,8 +229,7 @@ def chunk_by_headers(
 def build_chunk_metadata_row(
     chunk_id: str,
     metadata_row: dict[str, str],
-    chunk_size: int,
-    overlap_size: int,
+    chunk_text: str,
 ) -> dict[str, str]:
     return {
         "chunk_id": chunk_id,
@@ -238,26 +240,46 @@ def build_chunk_metadata_row(
         "year": metadata_row["year"],
         "url": metadata_row["url"],
         "section": metadata_row["section"],
-        "chunk_size": str(chunk_size),
-        "overlap_size": str(overlap_size),
+        "chunk_length": str(len(chunk_text)),
+        "breadcrumb": extract_breadcrumb(chunk_text),
     }
 
 
 def build_metadata_rows(
-    chunk_ids: list[str],
+    chunks: dict[str, str],
     metadata_row: dict[str, str],
 ) -> list[dict[str, str]]:
-    chunk_size, overlap_size = get_base_chunk_config(metadata_row["format"])
-
     return [
         build_chunk_metadata_row(
             chunk_id=chunk_id,
             metadata_row=metadata_row,
-            chunk_size=chunk_size,
-            overlap_size=overlap_size,
+            chunk_text=chunk_text,
         )
-        for chunk_id in chunk_ids
+        for chunk_id, chunk_text in chunks.items()
     ]
+
+
+def write_header_metadata_csv(
+    output_path: Path,
+    metadata_rows: list[dict[str, str]],
+) -> None:
+    fieldnames = [
+        "chunk_id",
+        "source_id",
+        "source_title",
+        "organization",
+        "format",
+        "year",
+        "url",
+        "section",
+        "chunk_length",
+        "breadcrumb",
+    ]
+
+    with output_path.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(metadata_rows)
 
 
 def transform_markdown(markdown_text: str) -> list[dict[str, str | int]]:
@@ -273,7 +295,7 @@ def process_markdown_file(
     transformed_records = transform_markdown(read_markdown(markdown_path))
     transformed_markdown = build_transformed_markdown(transformed_records)
     chunks = chunk_by_headers(markdown_path.stem, transformed_records)
-    metadata_rows = build_metadata_rows(list(chunks.keys()), metadata_row)
+    metadata_rows = build_metadata_rows(chunks, metadata_row)
     return transformed_markdown, chunks, metadata_rows
 
 
@@ -314,7 +336,7 @@ def main() -> None:
     header_chunks, metadata_rows = combine_chunk_outputs(markdown_paths, metadata_by_source)
 
     write_windows_json(HEADER_JSON_PATH, header_chunks)
-    write_metadata_csv(HEADER_METADATA_PATH, metadata_rows)
+    write_header_metadata_csv(HEADER_METADATA_PATH, metadata_rows)
     print(
         f"Finished. Chunked {len(markdown_paths)} source files into {len(header_chunks)} header chunks."
     )
