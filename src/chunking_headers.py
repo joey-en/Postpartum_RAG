@@ -23,24 +23,25 @@ def load_windows_module():
 
 windows_module = load_windows_module()
 CHUNKS_DIR = windows_module.CHUNKS_DIR
-PARSED_PDF_DIR = windows_module.PARSED_PDF_DIR
 SOURCE_METADATA_PATH = windows_module.SOURCE_METADATA_PATH
 clean_markdown_text = windows_module.clean_markdown_text
 ensure_directory = windows_module.ensure_directory
 get_base_chunk_config = windows_module.get_base_chunk_config
 load_source_metadata = windows_module.load_source_metadata
 read_markdown = windows_module.read_markdown
-select_markdown_files = windows_module.select_markdown_files
 validate_inputs = windows_module.validate_inputs
 write_metadata_csv = windows_module.write_metadata_csv
 write_windows_json = windows_module.write_windows_json
 
 
-HEADER_JSON_PATH = CHUNKS_DIR / "header.json"
+ROOT_DIR = Path(__file__).resolve().parents[1]
+PARSED_PDF_DOCLING_LLM_DIR = ROOT_DIR / "data" / "parsed_pdf_docling_llm"
+PARSED_WEB_DIR = ROOT_DIR / "data" / "parsed_web"
+INPUT_DIRS = [PARSED_PDF_DOCLING_LLM_DIR, PARSED_WEB_DIR]
+HEADER_JSON_PATH = CHUNKS_DIR / "chunks.json"
 HEADER_METADATA_PATH = CHUNKS_DIR / "header_metadata.csv"
 TEMP_MARKDOWN_DIR = CHUNKS_DIR / ".temp"
 
-SHORT_TEXT_WORD_LIMIT = 50
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
@@ -74,84 +75,48 @@ def build_line_records(markdown_text: str) -> list[dict[str, str | int]]:
     return [parse_line_record(line) for line in lines]
 
 
-def demote_h2_headers(records: list[dict[str, str | int]]) -> list[dict[str, str | int]]:
-    updated_records: list[dict[str, str | int]] = []
-
-    for record in records:
-        if is_header_record(record) and record["level"] == 2:
-            updated_records.append(
-                {
-                    "kind": "header",
-                    "level": 4,
-                    "text": record["text"],
-                }
-            )
-            continue
-
-        updated_records.append(record)
-
-    return updated_records
+def list_markdown_files(parsed_dir: Path) -> list[Path]:
+    return sorted(parsed_dir.glob("*.md"))
 
 
-def apply_subsection_hierarchy(
-    records: list[dict[str, str | int]],
-) -> list[dict[str, str | int]]:
-    if not records:
-        return []
+def resolve_markdown_path(source_arg: str, parsed_dirs: list[Path]) -> Path:
+    candidate = Path(source_arg)
 
-    updated_records = [dict(record) for record in records]
-    header_indexes = [index for index, record in enumerate(updated_records) if is_header_record(record)]
-    header_pointer = 0
+    if candidate.exists():
+        return candidate.resolve()
 
-    while header_pointer < len(header_indexes):
-        current_index = header_indexes[header_pointer]
-        current_record = updated_records[current_index]
+    source_name = candidate.stem if candidate.suffix.lower() == ".md" else candidate.name
+    matches = [parsed_dir / f"{source_name}.md" for parsed_dir in parsed_dirs]
+    existing_matches = [match.resolve() for match in matches if match.exists()]
 
-        if current_record["level"] != 4:
-            header_pointer += 1
-            continue
+    if len(existing_matches) == 1:
+        return existing_matches[0]
 
-        cluster_indexes = [current_index]
-        scan_pointer = header_pointer
+    if len(existing_matches) > 1:
+        raise FileExistsError(
+            f"Multiple markdown sources found for {source_arg}: "
+            + ", ".join(str(match) for match in existing_matches)
+        )
 
-        while scan_pointer + 1 < len(header_indexes):
-            next_index = header_indexes[scan_pointer + 1]
-            next_record = updated_records[next_index]
-            gap_records = updated_records[current_index + 1 : next_index]
-
-            if next_record["level"] != 4:
-                break
-
-            if count_record_words(gap_records) >= SHORT_TEXT_WORD_LIMIT:
-                break
-
-            cluster_indexes.append(next_index)
-            current_index = next_index
-            scan_pointer += 1
-
-        if len(cluster_indexes) >= 2:
-            promote_header_cluster(updated_records, cluster_indexes)
-            header_pointer = scan_pointer + 1
-            continue
-
-        header_pointer += 1
-
-    return updated_records
+    raise FileNotFoundError(f"Markdown source not found: {source_arg}")
 
 
-def promote_header_cluster(
-    records: list[dict[str, str | int]],
-    cluster_indexes: list[int],
-) -> None:
-    promoted_levels = [2, 3]
-    promoted_levels.extend([4] * max(0, len(cluster_indexes) - 2))
+def select_markdown_files(source_arg: str | None, parsed_dirs: list[Path]) -> list[Path]:
+    if source_arg:
+        return [resolve_markdown_path(source_arg, parsed_dirs)]
 
-    for record_index, level in zip(cluster_indexes, promoted_levels):
-        records[record_index]["level"] = level
+    markdown_paths: list[Path] = []
+    seen_source_ids: set[str] = set()
 
+    for parsed_dir in parsed_dirs:
+        for markdown_path in list_markdown_files(parsed_dir):
+            source_id = markdown_path.stem
+            if source_id in seen_source_ids:
+                raise ValueError(f"Duplicate source ID across input directories: {source_id}")
+            seen_source_ids.add(source_id)
+            markdown_paths.append(markdown_path)
 
-def count_record_words(records: list[dict[str, str | int]]) -> int:
-    return sum(len(str(record["text"]).split()) for record in records if record["kind"] == "text")
+    return sorted(markdown_paths)
 
 
 def is_header_record(record: dict[str, str | int]) -> bool:
@@ -176,7 +141,7 @@ def write_temp_markdown(output_path: Path, markdown_text: str) -> None:
 def build_chunk_id(source_id: str, counters: dict[int, int]) -> str:
     return (
         f"{source_id}_CHUNK_"
-        f"{counters[1]}_{counters[2]}_{counters[3]}_{counters[4]}"
+        f"{counters[1]}_{counters[2]}_{counters[3]}_{counters[4]}_{counters[5]}_{counters[6]}"
     )
 
 
@@ -191,19 +156,20 @@ def find_next_header_index(
     return None
 
 
-def find_parent_header(
+def build_breadcrumb(
     active_headers: dict[int, str],
     level: int,
-) -> str | None:
-    for candidate_level in range(level - 1, 0, -1):
-        if active_headers[candidate_level]:
-            return active_headers[candidate_level]
-
-    return None
+) -> str:
+    breadcrumb_parts = [
+        active_headers[candidate_level]
+        for candidate_level in range(1, level + 1)
+        if active_headers[candidate_level]
+    ]
+    return " > ".join(breadcrumb_parts)
 
 
 def reset_deeper_levels(counters: dict[int, int], active_headers: dict[int, str], level: int) -> None:
-    for candidate_level in range(level + 1, 5):
+    for candidate_level in range(level + 1, 7):
         counters[candidate_level] = 0
         active_headers[candidate_level] = ""
 
@@ -212,20 +178,15 @@ def update_hierarchy_state(
     counters: dict[int, int],
     active_headers: dict[int, str],
     level: int,
-    header_line: str,
+    header_text: str,
 ) -> None:
     counters[level] += 1
     reset_deeper_levels(counters, active_headers, level)
-    active_headers[level] = header_line
+    active_headers[level] = header_text
 
 
-def build_chunk_text(parent_header: str | None, current_header: str, body_lines: list[str]) -> str:
-    parts: list[str] = []
-
-    if parent_header:
-        parts.append(parent_header)
-
-    parts.append(current_header)
+def build_chunk_text(breadcrumb: str, current_header: str, body_lines: list[str]) -> str:
+    parts = [breadcrumb, current_header]
 
     if body_lines:
         parts.append("\n".join(body_lines))
@@ -238,8 +199,8 @@ def chunk_by_headers(
     records: list[dict[str, str | int]],
 ) -> dict[str, str]:
     header_chunks: dict[str, str] = {}
-    counters = {1: 0, 2: 0, 3: 0, 4: 0}
-    active_headers = {1: "", 2: "", 3: "", 4: ""}
+    counters = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
+    active_headers = {1: "", 2: "", 3: "", 4: "", 5: "", 6: ""}
 
     for index, record in enumerate(records):
         if not is_header_record(record):
@@ -247,8 +208,9 @@ def chunk_by_headers(
 
         level = int(record["level"])
         header_line = format_record_line(record)
-        parent_header = find_parent_header(active_headers, level)
-        update_hierarchy_state(counters, active_headers, level, header_line)
+        header_text = str(record["text"])
+        update_hierarchy_state(counters, active_headers, level, header_text)
+        breadcrumb = build_breadcrumb(active_headers, level)
         next_header_index = find_next_header_index(records, index)
         end_index = next_header_index if next_header_index is not None else len(records)
         body_lines = [
@@ -256,7 +218,7 @@ def chunk_by_headers(
             for body_record in records[index + 1 : end_index]
         ]
         chunk_id = build_chunk_id(source_id, counters)
-        header_chunks[chunk_id] = build_chunk_text(parent_header, header_line, body_lines)
+        header_chunks[chunk_id] = build_chunk_text(breadcrumb, header_line, body_lines)
 
     return header_chunks
 
@@ -301,8 +263,7 @@ def build_metadata_rows(
 def transform_markdown(markdown_text: str) -> list[dict[str, str | int]]:
     cleaned_markdown = clean_markdown_text(markdown_text)
     records = build_line_records(cleaned_markdown)
-    records = demote_h2_headers(records)
-    return apply_subsection_hierarchy(records)
+    return records
 
 
 def process_markdown_file(
@@ -343,12 +304,13 @@ def combine_chunk_outputs(
 
 def main() -> None:
     args = parse_args()
-    validate_inputs(PARSED_PDF_DIR, SOURCE_METADATA_PATH)
+    for input_dir in INPUT_DIRS:
+        validate_inputs(input_dir, SOURCE_METADATA_PATH)
     ensure_directory(CHUNKS_DIR)
     ensure_directory(TEMP_MARKDOWN_DIR)
 
     metadata_by_source = load_source_metadata(SOURCE_METADATA_PATH)
-    markdown_paths = select_markdown_files(args.source_id, PARSED_PDF_DIR)
+    markdown_paths = select_markdown_files(args.source_id, INPUT_DIRS)
     header_chunks, metadata_rows = combine_chunk_outputs(markdown_paths, metadata_by_source)
 
     write_windows_json(HEADER_JSON_PATH, header_chunks)
