@@ -32,6 +32,7 @@ def load_pdf_parser():
     try:
         from docling.document_converter import DocumentConverter
         from docling.document_converter import PdfFormatOption
+        from docling_core.types.doc import ImageRefMode, PictureItem
         from docling.datamodel.accelerator_options import AcceleratorOptions
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -53,7 +54,7 @@ def load_pdf_parser():
         table_batch_size=1,
         ocr_batch_size=1,
         generate_page_images=False,
-        generate_picture_images=False,
+        generate_picture_images=True,
         generate_table_images=False,
     )
     converter = DocumentConverter(
@@ -64,11 +65,10 @@ def load_pdf_parser():
         }
     )
 
-    def to_markdown(pdf_path: str) -> str:
-        result = converter.convert(pdf_path)
-        return result.document.export_to_markdown()
+    def convert_pdf(pdf_path: str):
+        return converter.convert(pdf_path)
 
-    return to_markdown
+    return convert_pdf, ImageRefMode, PictureItem
 
 
 def get_pdf_page_count(pdf_path: Path) -> int:
@@ -114,11 +114,72 @@ def split_pdf_into_chunks(
     return chunk_paths
 
 
-def parse_pdf_to_markdown(pdf_path: Path, to_markdown) -> str:
+def save_picture_images(
+    conversion_result,
+    picture_item_class,
+    image_dir: Path,
+    start_index: int,
+) -> int:
+    picture_count = start_index
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    for element, _level in conversion_result.document.iterate_items():
+        if not isinstance(element, picture_item_class):
+            continue
+
+        image = element.get_image(conversion_result.document)
+        if image is None:
+            continue
+
+        picture_count += 1
+        image_path = image_dir / f"picture-{picture_count:03d}.png"
+        image.save(image_path, "PNG")
+
+    return picture_count
+
+
+def build_picture_reference_markdown(
+    markdown_text: str,
+    picture_count: int,
+    image_reference_prefix: str,
+) -> str:
+    placeholder = "<!-- image -->"
+
+    for picture_index in range(1, picture_count + 1):
+        image_reference = (
+            f"![Picture {picture_index}]"
+            f"({image_reference_prefix}/picture-{picture_index:03d}.png)"
+        )
+        markdown_text = markdown_text.replace(placeholder, image_reference, 1)
+
+    return markdown_text
+
+
+def parse_pdf_to_markdown(
+    pdf_path: Path,
+    convert_pdf,
+    image_ref_mode,
+    picture_item_class,
+) -> str:
     page_count = get_pdf_page_count(pdf_path)
+    image_dir = PARSED_PDF_DOCLING_DIR / "images" / pdf_path.stem
+    picture_count = 0
+    image_reference_prefix = f"images/{pdf_path.stem}"
 
     if page_count <= CHUNK_PAGE_COUNT:
-        return to_markdown(str(pdf_path))
+        result = convert_pdf(str(pdf_path))
+        picture_count = save_picture_images(
+            result,
+            picture_item_class,
+            image_dir,
+            picture_count,
+        )
+        markdown = result.document.export_to_markdown(image_mode=image_ref_mode.PLACEHOLDER)
+        return build_picture_reference_markdown(
+            markdown,
+            picture_count,
+            image_reference_prefix,
+        )
 
     markdown_parts: list[str] = []
     with tempfile.TemporaryDirectory(prefix="docling_pdf_chunks_") as temp_dir_name:
@@ -131,19 +192,45 @@ def parse_pdf_to_markdown(pdf_path: Path, to_markdown) -> str:
 
         for chunk_index, chunk_path in enumerate(chunk_paths, start=1):
             print(f"INFO  {pdf_path.name} chunk {chunk_index}/{len(chunk_paths)}")
-            markdown_parts.append(to_markdown(str(chunk_path)))
+            result = convert_pdf(str(chunk_path))
+            picture_count = save_picture_images(
+                result,
+                picture_item_class,
+                image_dir,
+                picture_count,
+            )
+            markdown_parts.append(
+                result.document.export_to_markdown(
+                    image_mode=image_ref_mode.PLACEHOLDER,
+                )
+            )
 
-    return "\n\n".join(markdown_parts)
+    return build_picture_reference_markdown(
+        "\n\n".join(markdown_parts),
+        picture_count,
+        image_reference_prefix,
+    )
 
 
-def process_pdf(pdf_path: Path, parsed_dir: Path, to_markdown) -> str:
+def process_pdf(
+    pdf_path: Path,
+    parsed_dir: Path,
+    convert_pdf,
+    image_ref_mode,
+    picture_item_class,
+) -> str:
     output_path = build_output_path(pdf_path, parsed_dir)
 
     if output_path.exists():
         return f"SKIP  {pdf_path.name} -> {output_path.name}"
 
     try:
-        markdown = parse_pdf_to_markdown(pdf_path, to_markdown)
+        markdown = parse_pdf_to_markdown(
+            pdf_path,
+            convert_pdf,
+            image_ref_mode,
+            picture_item_class,
+        )
     except Exception as exc:
         return f"FAIL  {pdf_path.name} -> {exc}"
 
@@ -154,14 +241,22 @@ def process_pdf(pdf_path: Path, parsed_dir: Path, to_markdown) -> str:
 def process_pdfs_one_by_one(
     pdf_paths: list[Path],
     parsed_dir: Path,
-    to_markdown,
+    convert_pdf,
+    image_ref_mode,
+    picture_item_class,
 ) -> tuple[int, int, int]:
     processed_count = 0
     skipped_count = 0
     failed_count = 0
 
     for pdf_path in pdf_paths:
-        status = process_pdf(pdf_path, parsed_dir, to_markdown)
+        status = process_pdf(
+            pdf_path,
+            parsed_dir,
+            convert_pdf,
+            image_ref_mode,
+            picture_item_class,
+        )
         print(status)
 
         if status.startswith("DONE"):
@@ -178,6 +273,7 @@ def main() -> None:
     args = parse_args()
     validate_inputs(RAW_PDF_DIR)
     ensure_directory(PARSED_PDF_DOCLING_DIR)
+    ensure_directory(PARSED_PDF_DOCLING_DIR / "images")
 
     pdf_paths = select_pdfs(args.pdf_path, RAW_PDF_DIR)
     pending_pdfs, skipped_pdfs = split_processed_pdfs(
@@ -193,11 +289,13 @@ def main() -> None:
         print(f"Finished. Processed: 0. Skipped: {len(skipped_pdfs)}.")
         return
 
-    to_markdown = load_pdf_parser()
+    convert_pdf, image_ref_mode, picture_item_class = load_pdf_parser()
     processed_count, pending_skipped_count, failed_count = process_pdfs_one_by_one(
         pdf_paths=pending_pdfs,
         parsed_dir=PARSED_PDF_DOCLING_DIR,
-        to_markdown=to_markdown,
+        convert_pdf=convert_pdf,
+        image_ref_mode=image_ref_mode,
+        picture_item_class=picture_item_class,
     )
 
     print(
