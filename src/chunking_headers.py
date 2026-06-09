@@ -2,46 +2,76 @@ from __future__ import annotations
 
 import argparse
 import csv
-import importlib.util
 import json
 import re
 from pathlib import Path
-
-CURRENT_DIR = Path(__file__).resolve().parent
-WINDOWS_SCRIPT_PATH = CURRENT_DIR / "chunking_windows.py"
-
-
-def load_windows_module():
-    module_name = "chunking_windows"
-    spec = importlib.util.spec_from_file_location(module_name, WINDOWS_SCRIPT_PATH)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to load helper module from: {WINDOWS_SCRIPT_PATH}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-windows_module = load_windows_module()
-CHUNKS_DIR = windows_module.CHUNKS_DIR
-SOURCE_METADATA_PATH = windows_module.SOURCE_METADATA_PATH
-clean_markdown_text = windows_module.clean_markdown_text
-ensure_directory = windows_module.ensure_directory
-load_source_metadata = windows_module.load_source_metadata
-read_markdown = windows_module.read_markdown
-validate_inputs = windows_module.validate_inputs
-write_windows_json = windows_module.write_windows_json
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 PARSED_PDF_DOCLING_LLM_DIR = ROOT_DIR / "data" / "parsed_pdf_docling_llm"
 PARSED_WEB_DIR = ROOT_DIR / "data" / "parsed_web"
 INPUT_DIRS = [PARSED_PDF_DOCLING_LLM_DIR, PARSED_WEB_DIR]
+SOURCE_METADATA_PATH = (
+    ROOT_DIR / "data" / "raw_pdfs" / "postpartum_rag_sources_master_for_chunking.csv"
+)
+CHUNKS_DIR = ROOT_DIR / "data" / "chunks"
 HEADER_JSON_PATH = CHUNKS_DIR / "chunks.json"
 HEADER_METADATA_PATH = CHUNKS_DIR / "header_metadata.csv"
 TEMP_MARKDOWN_DIR = CHUNKS_DIR / ".temp"
 
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
+
+
+def ensure_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_metadata_row(row: dict[str, str]) -> dict[str, str]:
+    return {key: (value or "").strip() for key, value in row.items()}
+
+
+def load_source_metadata(csv_path: Path) -> dict[str, dict[str, str]]:
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        return {
+            row["source_id"].strip(): normalize_metadata_row(row)
+            for row in reader
+            if row.get("source_id")
+        }
+
+
+def read_markdown(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def clean_markdown_text(text: str) -> str:
+    cleaned_lines: list[str] = []
+
+    for line in text.splitlines():
+        stripped_line = line.strip()
+        if not stripped_line:
+            cleaned_lines.append("")
+            continue
+
+        if "intentionally omitted" in stripped_line.lower():
+            continue
+
+        cleaned_lines.append(stripped_line)
+
+    return "\n".join(cleaned_lines).strip()
+
+
+def write_windows_json(output_path: Path, windows: dict[str, str]) -> None:
+    with output_path.open("w", encoding="utf-8") as json_file:
+        json.dump(windows, json_file, ensure_ascii=False, indent=2)
+
+
+def validate_inputs(parsed_dir: Path, metadata_path: Path) -> None:
+    if not parsed_dir.exists():
+        raise FileNotFoundError(f"Parsed markdown directory not found: {parsed_dir}")
+
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Source metadata CSV not found: {metadata_path}")
 
 
 def parse_args() -> argparse.Namespace:

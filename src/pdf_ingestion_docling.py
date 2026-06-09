@@ -1,18 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import tempfile
 from pathlib import Path
-
-from pdf_ingestion import (
-    RAW_PDF_DIR,
-    build_output_path,
-    ensure_directory,
-    parse_args,
-    select_pdfs,
-    split_processed_pdfs,
-    validate_inputs,
-    write_markdown,
-)
+from typing import Iterable
 
 r'''
 python src\pdf_ingestion_docling.py OR src\pdf_ingestion_docling.py SRC001.pdf
@@ -24,8 +15,87 @@ has a matching `.md`
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+RAW_PDF_DIR = ROOT_DIR / "data" / "raw_pdfs"
 PARSED_PDF_DOCLING_DIR = ROOT_DIR / "data" / "parsed_pdf_docling"
 CHUNK_PAGE_COUNT = 30
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Parse raw PDFs into Markdown files."
+    )
+    parser.add_argument(
+        "pdf_path",
+        nargs="?",
+        help="Optional path or filename for a single PDF to process.",
+    )
+    return parser.parse_args()
+
+
+def ensure_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def list_raw_pdfs(raw_dir: Path) -> list[Path]:
+    return sorted(raw_dir.glob("*.pdf"))
+
+
+def build_output_path(pdf_path: Path, parsed_dir: Path) -> Path:
+    return parsed_dir / f"{pdf_path.stem}.md"
+
+
+def is_processed(pdf_path: Path, parsed_dir: Path) -> bool:
+    return build_output_path(pdf_path, parsed_dir).exists()
+
+
+def resolve_pdf_path(pdf_input: str, raw_dir: Path) -> Path:
+    candidate = Path(pdf_input)
+
+    if candidate.exists():
+        return candidate.resolve()
+
+    raw_candidate = raw_dir / candidate.name
+    if raw_candidate.exists():
+        return raw_candidate.resolve()
+
+    if candidate.suffix.lower() != ".pdf":
+        named_candidate = raw_dir / f"{candidate.name}.pdf"
+        if named_candidate.exists():
+            return named_candidate.resolve()
+
+    raise FileNotFoundError(f"PDF not found: {pdf_input}")
+
+
+def select_pdfs(pdf_arg: str | None, raw_dir: Path) -> list[Path]:
+    if pdf_arg:
+        return [resolve_pdf_path(pdf_arg, raw_dir)]
+
+    return list_raw_pdfs(raw_dir)
+
+
+def split_processed_pdfs(
+    pdf_paths: Iterable[Path],
+    parsed_dir: Path,
+) -> tuple[list[Path], list[Path]]:
+    pending_pdfs: list[Path] = []
+    skipped_pdfs: list[Path] = []
+
+    for pdf_path in pdf_paths:
+        if is_processed(pdf_path, parsed_dir):
+            skipped_pdfs.append(pdf_path)
+        else:
+            pending_pdfs.append(pdf_path)
+
+    return pending_pdfs, skipped_pdfs
+
+
+def write_markdown(output_path: Path, markdown: str) -> None:
+    output_path.write_text(markdown, encoding="utf-8")
+
+
+def validate_inputs(raw_dir: Path) -> None:
+    if not raw_dir.exists():
+        raise FileNotFoundError(f"Raw PDF directory not found: {raw_dir}")
 
 
 def load_pdf_parser():

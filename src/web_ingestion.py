@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from bs4 import NavigableString
 from bs4 import Tag
 
-from pdf_ingestion import ensure_directory, write_markdown
+from pdf_ingestion_docling import ensure_directory, write_markdown
 
 r'''
 python src\web_ingestion.py OR python src\web_ingestion.py SRC014

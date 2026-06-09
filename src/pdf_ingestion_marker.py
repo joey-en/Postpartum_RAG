@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from pdf_ingestion import (
+from pdf_ingestion_docling import (
     RAW_PDF_DIR,
     build_output_path,
     ensure_directory,
